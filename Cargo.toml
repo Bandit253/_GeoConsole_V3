@@ -1,0 +1,59 @@
+[package]
+name = "geoconsole-v3"
+version = "0.1.0"
+edition = "2021"
+description = "GeoConsole V3 - Map Studio with Rust backend, DuckDB, and Arrow IPC"
+authors = ["GeoConsole Team"]
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs", "trace", "compression-gzip"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# DuckDB with bundled build (includes Arrow)
+duckdb = { version = "1.0", features = ["bundled"] }
+
+# Arrow IPC - must match DuckDB's bundled Arrow version (54.x)
+arrow = { version = "54", default-features = false, features = ["ipc"] }
+
+# GeoJSON handling
+geojson = "0.24"
+
+# GeoArrow for native Arrow geometry encoding
+geoarrow = "0.7"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async utilities
+futures = "0.3"
+
+# HTTP client for Valhalla proxy
+reqwest = { version = "0.12", features = ["json"] }
+
+[profile.dev]
+split-debuginfo = "unpacked"
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[dev-dependencies]

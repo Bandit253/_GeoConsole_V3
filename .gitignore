@@ -1,0 +1,34 @@
+# Rust
+/target/
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Data
+/data/
+*.parquet
+*.geoparquet
+
+# Valhalla tiles
+valhalla_tiles/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
