@@ -161,16 +161,57 @@ interface LayerData {
   visible: boolean;
 }
 
+export interface PickedFeatureInfo {
+  layerId: string;
+  properties: Record<string, any>;
+  coordinate: [number, number];
+}
+
 class DeckGLService {
   private overlay: MapboxOverlay | null = null;
   private layers: Map<string, any> = new Map();
   private layerData: Map<string, LayerData> = new Map();
   private map: MapLibreMap | null = null;
+  private _onFeatureClick: ((info: PickedFeatureInfo) => void) | null = null;
+
+  /** Register a callback for feature click events */
+  set onFeatureClick(cb: ((info: PickedFeatureInfo) => void) | null) {
+    this._onFeatureClick = cb;
+  }
 
   init(map: MapLibreMap): void {
     if (this.overlay) return;
     this.map = map;
-    this.overlay = new MapboxOverlay({ interleaved: true, layers: [] });
+    this.overlay = new MapboxOverlay({
+      interleaved: true,
+      layers: [],
+      onClick: (info: any) => {
+        if (!info.object || !this._onFeatureClick) return;
+        const coordinate = info.coordinate as [number, number];
+        const layerId = info.layer?.id || '';
+        let properties: Record<string, any> = {};
+
+        // Fallback layers store properties on the object directly
+        if (info.object.properties) {
+          properties = { ...info.object.properties };
+        } else if (info.index !== undefined && info.index >= 0) {
+          // GeoArrow path: read row from the Arrow table
+          const data = this.layerData.get(layerId);
+          if (data?.arrowTable) {
+            const table = data.arrowTable;
+            for (const field of table.schema.fields) {
+              if (field.name === 'geometry' || field.name === '__geometry') continue;
+              const col = table.getChild(field.name);
+              if (col) properties[field.name] = col.get(info.index);
+            }
+          }
+        }
+
+        if (Object.keys(properties).length > 0) {
+          this._onFeatureClick({ layerId, properties, coordinate });
+        }
+      },
+    });
     map.addControl(this.overlay as any);
     console.log('deck.gl overlay initialized');
   }

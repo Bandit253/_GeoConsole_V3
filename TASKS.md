@@ -265,12 +265,63 @@ Map Studio application with Rust backend, DuckDB spatial database, Arrow IPC dat
   - Isochrone generation
   - Route visualization
 
-#### ⬜ Task 19: Advanced Styling
-- **Description:** Data-driven styling
+#### ✅ Task 19: SQL Filter & Field-Based Symbolisation
+- **Date:** February 22, 2026
+- **Description:** Filter displayed features by SQL WHERE clause and symbolise/style by field value
 - **Features:**
-  - Categorized styling
-  - Graduated styling with classification
-  - Label support
+  - **SQL Filter:** User enters a SQL WHERE clause that runs against the browser DuckDB WASM cache — no server round-trip
+  - **Field-Based Symbolisation:** Style features by attribute field (graduated for numeric, categorized for text)
+  - **Color Ramps:** 8 built-in color ramps (Blues, Greens, Reds, Viridis, Spectral, etc.)
+  - **Live Feedback:** Feature count updates after filter, error messages for invalid SQL
+- **Implementation:**
+  - `DuckDBService.queryWithFilter()` — applies WHERE clause to cached table, returns Arrow Table
+  - `DuckDBService.getColumnUniqueValues()` — unique values for categorized styling
+  - `DuckDBService.getColumnRange()` — min/max for graduated styling
+  - `queryFilteredArrowTable()` in `api.ts` — frontend API for filtered queries
+  - `SqlFilter.svelte` — UI component with SQL editor, field chips, SQL snippets, error/result display
+  - `MapStudio.svelte` — `handleSqlFilterChange()` wires filter → DuckDB WASM → deck.gl re-render
+  - `MapLayer.sqlFilter` field persists filter per layer
+  - `mapStudioStore.setSqlFilter()` updates store state
+- **Data Flow:**
+  ```
+  User SQL WHERE → Browser DuckDB WASM (cached table) → Arrow Table → deck.gl layer re-render
+  ```
+- **Files Created:**
+  - `frontend/src/lib/components/SqlFilter.svelte`
+- **Files Modified:**
+  - `frontend/src/lib/services/duckdb.ts` — `queryWithFilter()`, `getColumnUniqueValues()`, `getColumnRange()`
+  - `frontend/src/lib/services/api.ts` — `queryFilteredArrowTable()`, `getColumnUniqueValues()`, `getColumnRange()`
+  - `frontend/src/lib/types/mapStudio.ts` — `sqlFilter` field on `MapLayer`
+  - `frontend/src/lib/stores/mapStudio.svelte.ts` — `setSqlFilter()` method
+  - `frontend/src/lib/components/MapStudio.svelte` — SQL filter integration + wiring
+
+#### ✅ Task 20: Feature Click Popup
+- **Date:** February 22, 2026
+- **Description:** Click a feature on the map to see its attributes in a popup
+- **Features:**
+  - Click any feature to show a dark-themed MapLibre popup with all attributes
+  - Shows layer name as header, attributes as key-value table
+  - Handles both GeoArrow (reads row from Arrow table by index) and fallback (WKB-parsed) layers
+  - NULL values styled distinctly, long strings truncated, numbers formatted
+  - Popup closes on X button or clicking empty map area
+  - Scrollable for features with many attributes (max-height 400px)
+- **Implementation:**
+  - `deckglService.onFeatureClick` callback setter in `deckgl.ts`
+  - `PickedFeatureInfo` interface exported from `deckgl.ts`
+  - `onClick` handler on `MapboxOverlay` extracts properties from picked object
+  - `handleFeatureClick()` in `MapStudio.svelte` builds HTML and shows `maplibregl.Popup`
+  - Global popup styles in `app.css` (MapLibre popup DOM is outside Svelte scope)
+- **Files Modified:**
+  - `frontend/src/lib/services/deckgl.ts` — `PickedFeatureInfo`, `onFeatureClick`, `onClick` handler
+  - `frontend/src/lib/components/MapStudio.svelte` — `handleFeatureClick()`, popup lifecycle
+  - `frontend/src/app.css` — dark-themed popup styles
+
+#### ⬜ Task 21: Label Support
+- **Description:** Text labels on map features
+- **Features:**
+  - Label by field
+  - Font size, color, halo
+  - Collision detection
 
 ---
 

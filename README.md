@@ -99,10 +99,12 @@ The frontend is available at `http://localhost:5173`.
 
 ## Data Workflow
 
-1. **Upload GeoParquet** - User uploads a `.parquet` or `.geoparquet` file
-2. **Load into DuckDB** - Backend creates a table with spatial extension
-3. **Query via Arrow IPC** - Frontend requests features in Arrow IPC format
-4. **Render on Map** - MapLibre GL displays the data
+1. **Upload** - User uploads a spatial file (GeoParquet, GeoPackage, Shapefile, GeoJSON, KML)
+2. **Server DuckDB** - Backend loads into DuckDB with spatial extension (source of truth)
+3. **Arrow IPC Transfer** - Server streams Arrow IPC binary to browser
+4. **Browser DuckDB WASM** - Cached locally with TTL for fast re-queries (no server round-trip)
+5. **SQL Filter** - User WHERE clause runs against browser DuckDB WASM cache
+6. **deck.gl Render** - Arrow Table → GeoArrow layers (zero-copy GPU rendering)
 
 ## Project Structure
 
@@ -129,11 +131,14 @@ D:\_GeoConsole_V3/
 │   │       │   ├── MapStudio.svelte
 │   │       │   ├── LayerPanel.svelte
 │   │       │   ├── StyleEditor.svelte
+│   │       │   ├── SqlFilter.svelte
 │   │       │   └── BasemapSelector.svelte
 │   │       ├── stores/
 │   │       │   └── mapStudio.svelte.ts
 │   │       ├── services/
-│   │       │   └── api.ts
+│   │       │   ├── api.ts
+│   │       │   ├── duckdb.ts
+│   │       │   └── deckgl.ts
 │   │       └── types/
 │   │           └── mapStudio.ts
 └── .windsurf/
@@ -145,13 +150,17 @@ D:\_GeoConsole_V3/
 ### Map Studio
 - **Layer Management** - Add, remove, reorder, toggle visibility
 - **Styling Controls** - Fill/stroke colors, opacity, width, point radius
+- **Field-Based Symbolisation** - Color features by attribute field (graduated for numeric, categorized for text)
+- **SQL Filter** - Filter displayed features with SQL WHERE clauses (runs in browser DuckDB WASM)
 - **Basemap Selection** - OSM, CartoDB, Satellite, Terrain, None
-- **Color Ramps** - 8 preset color ramps for graduated styling
+- **Color Ramps** - 8 preset color ramps (Blues, Greens, Reds, Viridis, Spectral, etc.)
 - **Export/Import** - Save map configuration as JSON
 
 ### Data Support
-- **GeoParquet** - Load spatial data from Parquet files
-- **Arrow IPC** - High-performance binary data transfer
+- **Multi-Format Ingestion** - GeoParquet, GeoPackage, Shapefile, GeoJSON, KML
+- **Arrow IPC** - High-performance binary data transfer (streamed, constant memory)
+- **Browser DuckDB WASM** - Local cache with TTL, OPFS persistence, IndexedDB fallback
+- **deck.gl GeoArrow** - Zero-copy Arrow → GPU rendering
 - **GeoJSON** - Standard GeoJSON output
 
 ### Routing (Valhalla)

@@ -223,6 +223,90 @@ class DuckDBService {
   }
 
   /**
+   * Query cached dataset with an optional SQL WHERE filter.
+   * The filter is applied as a WHERE clause on the cached table.
+   * Returns an Arrow Table for deck.gl rendering.
+   */
+  async queryWithFilter(
+    datasetId: string,
+    whereClause?: string
+  ): Promise<Table> {
+    await this.init();
+    if (!this.conn) throw new Error('DuckDB not initialized');
+
+    const entry = this.cache.get(datasetId);
+    if (!entry) throw new Error(`Dataset ${datasetId} not cached`);
+
+    // Check TTL
+    if (Date.now() - entry.cachedAt > entry.ttlMs) {
+      this.removeDataset(datasetId);
+      throw new Error(`Dataset ${datasetId} cache expired`);
+    }
+
+    let sql = `SELECT * FROM ${entry.tableName}`;
+    if (whereClause && whereClause.trim().length > 0) {
+      sql += ` WHERE ${whereClause}`;
+    }
+
+    return await this.conn.query(sql);
+  }
+
+  /**
+   * Get unique values for a column (for categorized styling).
+   * Returns up to `limit` unique values sorted.
+   */
+  async getColumnUniqueValues(
+    datasetId: string,
+    columnName: string,
+    limit = 100
+  ): Promise<(string | number)[]> {
+    await this.init();
+    if (!this.conn) throw new Error('DuckDB not initialized');
+
+    const entry = this.cache.get(datasetId);
+    if (!entry) throw new Error(`Dataset ${datasetId} not cached`);
+
+    // Validate column name (basic alphanumeric + underscore check)
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(columnName)) {
+      throw new Error(`Invalid column name: ${columnName}`);
+    }
+
+    const sql = `SELECT DISTINCT "${columnName}" AS val FROM ${entry.tableName} WHERE "${columnName}" IS NOT NULL ORDER BY val LIMIT ${limit}`;
+    const result = await this.conn.query(sql);
+    const values: (string | number)[] = [];
+    for (let i = 0; i < result.numRows; i++) {
+      const row = result.get(i);
+      if (row) values.push(row.val);
+    }
+    return values;
+  }
+
+  /**
+   * Get min/max range for a numeric column (for graduated styling).
+   */
+  async getColumnRange(
+    datasetId: string,
+    columnName: string
+  ): Promise<{ min: number; max: number } | null> {
+    await this.init();
+    if (!this.conn) throw new Error('DuckDB not initialized');
+
+    const entry = this.cache.get(datasetId);
+    if (!entry) throw new Error(`Dataset ${datasetId} not cached`);
+
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(columnName)) {
+      throw new Error(`Invalid column name: ${columnName}`);
+    }
+
+    const sql = `SELECT MIN("${columnName}") AS min_val, MAX("${columnName}") AS max_val FROM ${entry.tableName} WHERE "${columnName}" IS NOT NULL`;
+    const result = await this.conn.query(sql);
+    if (result.numRows === 0) return null;
+    const row = result.get(0);
+    if (!row || row.min_val === null || row.max_val === null) return null;
+    return { min: Number(row.min_val), max: Number(row.max_val) };
+  }
+
+  /**
    * Remove a dataset from local cache
    */
   async removeDataset(datasetId: string): Promise<void> {

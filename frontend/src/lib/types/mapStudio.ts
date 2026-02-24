@@ -53,6 +53,7 @@ export interface MapLayer {
   // Data source
   datasetId?: string;
   query?: string;
+  sqlFilter?: string;
   
   // Geometry info
   geometryType?: GeometryType;

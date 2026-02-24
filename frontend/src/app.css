@@ -85,3 +85,85 @@ input:focus, select:focus {
 .btn-danger:hover:not(:disabled) {
   background: #c0392b;
 }
+
+/* ============================================================================
+   Feature Popup (MapLibre) — global styles required, popup DOM is outside Svelte
+   ============================================================================ */
+
+.maplibregl-popup-content {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  padding: 0 !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.maplibregl-popup-close-button {
+  color: var(--text-secondary) !important;
+  font-size: 18px !important;
+  padding: 4px 8px !important;
+  right: 4px !important;
+  top: 4px !important;
+}
+
+.maplibregl-popup-close-button:hover {
+  color: var(--text-primary) !important;
+  background: transparent !important;
+}
+
+.maplibregl-popup-tip {
+  border-top-color: var(--bg-secondary) !important;
+}
+
+.feature-popup {
+  min-width: 200px;
+}
+
+.popup-header {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.popup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.popup-table tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.popup-table td {
+  padding: 5px 14px;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(42, 42, 74, 0.5);
+}
+
+.popup-key {
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+  width: 1%;
+  padding-right: 12px !important;
+}
+
+.popup-val {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.null-val {
+  color: var(--text-secondary);
+  font-style: italic;
+  opacity: 0.6;
+}

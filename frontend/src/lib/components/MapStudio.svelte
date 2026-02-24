@@ -3,10 +3,11 @@
   import maplibregl from 'maplibre-gl';
   import { mapStudioStore } from '../stores/mapStudio.svelte';
   import { BASEMAPS, type MapLayer } from '../types/mapStudio';
-  import { listDatasets, getArrowTableForDeckGL, uploadDataset, isDatasetCached, removeFromCache } from '../services/api';
-  import { deckglService } from '../services/deckgl';
+  import { listDatasets, getArrowTableForDeckGL, queryFilteredArrowTable, uploadDataset, isDatasetCached, removeFromCache } from '../services/api';
+  import { deckglService, type PickedFeatureInfo } from '../services/deckgl';
   import LayerPanel from './LayerPanel.svelte';
   import StyleEditor from './StyleEditor.svelte';
+  import SqlFilter from './SqlFilter.svelte';
   import BasemapSelector from './BasemapSelector.svelte';
 
   let mapContainer: HTMLDivElement;
@@ -19,6 +20,9 @@
   let error = $state<string | null>(null);
   let previousBbox: [number, number, number, number] | null = null;
   let moveEndTimer: ReturnType<typeof setTimeout> | null = null;
+  let sqlFilterRef: SqlFilter | null = null;
+  let filterApplying = $state(false);
+  let featurePopup: maplibregl.Popup | null = null;
 
   onMount(async () => {
     initMap();
@@ -26,6 +30,8 @@
   });
 
   onDestroy(() => {
+    deckglService.onFeatureClick = null;
+    if (featurePopup) featurePopup.remove();
     deckglService.dispose();
     map?.remove();
   });
@@ -79,7 +85,16 @@
     map.on('load', () => {
       if (map) {
         deckglService.init(map);
+        deckglService.onFeatureClick = handleFeatureClick;
         console.log('deck.gl overlay initialized on map load');
+      }
+    });
+
+    // Close popup on map click (no feature)
+    map.on('click', () => {
+      if (featurePopup) {
+        featurePopup.remove();
+        featurePopup = null;
       }
     });
   }
@@ -296,6 +311,98 @@
     });
   }
 
+  function handleFeatureClick(info: PickedFeatureInfo) {
+    if (!map) return;
+
+    // Close existing popup
+    if (featurePopup) {
+      featurePopup.remove();
+      featurePopup = null;
+    }
+
+    // Find layer name
+    const layer = mapStudioStore.state.layers.find(l => l.id === info.layerId);
+    const layerName = layer?.name || info.layerId;
+
+    // Build HTML table of attributes
+    const entries = Object.entries(info.properties).filter(
+      ([k]) => k !== 'geometry' && k !== '__geometry'
+    );
+    if (entries.length === 0) return;
+
+    let html = `<div class="feature-popup">`;
+    html += `<div class="popup-header">${layerName}</div>`;
+    html += `<table class="popup-table">`;
+    for (const [key, value] of entries) {
+      const displayVal = value === null || value === undefined
+        ? '<span class="null-val">NULL</span>'
+        : typeof value === 'number'
+          ? Number.isInteger(value) ? value.toString() : value.toFixed(4)
+          : String(value).length > 120
+            ? String(value).slice(0, 120) + '\u2026'
+            : String(value);
+      html += `<tr><td class="popup-key">${key}</td><td class="popup-val">${displayVal}</td></tr>`;
+    }
+    html += `</table></div>`;
+
+    featurePopup = new maplibregl.Popup({
+      closeButton: true,
+      closeOnClick: false,
+      maxWidth: '360px',
+    })
+      .setLngLat(info.coordinate)
+      .setHTML(html)
+      .addTo(map);
+  }
+
+  async function handleSqlFilterChange(sqlFilter: string | undefined) {
+    const selectedId = mapStudioStore.state.selectedLayerId;
+    const layer = mapStudioStore.selectedLayer;
+    if (!selectedId || !layer?.datasetId) return;
+
+    mapStudioStore.setSqlFilter(selectedId, sqlFilter);
+    filterApplying = true;
+
+    try {
+      let arrowTable;
+      if (sqlFilter && sqlFilter.trim()) {
+        arrowTable = await queryFilteredArrowTable(layer.datasetId, sqlFilter);
+      } else {
+        arrowTable = await queryFilteredArrowTable(layer.datasetId);
+      }
+
+      const style = {
+        fillColor: hexToRgba(layer.style.fillColor as string || '#3388ff', layer.opacity),
+        strokeColor: hexToRgba(layer.style.strokeColor as string || '#2171b5', 1),
+        strokeWidth: layer.style.strokeWidth || 1,
+        radius: layer.style.radius || 5,
+        opacity: layer.opacity,
+        styleType: layer.style.type as any,
+        property: layer.style.property,
+        colors: layer.style.colors,
+        breaks: layer.style.breaks,
+        categories: layer.style.categories as any,
+      };
+
+      deckglService.addArrowLayer(
+        selectedId,
+        arrowTable,
+        layer.geometryType || 'Polygon',
+        style,
+        layer.visible
+      );
+
+      mapStudioStore.updateLayer(selectedId, { featureCount: arrowTable.numRows });
+      sqlFilterRef?.setResult(arrowTable.numRows);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Query failed';
+      console.error('SQL filter error:', msg);
+      sqlFilterRef?.setError(msg);
+    } finally {
+      filterApplying = false;
+    }
+  }
+
   function handleLayerMove(layerId: string, direction: 'up' | 'down') {
     // Update store first
     mapStudioStore.moveLayer(layerId, direction);
@@ -384,6 +491,12 @@
               applyOpacityToMap(mapStudioStore.state.selectedLayerId, opacity);
             }
           }}
+        />
+        <SqlFilter
+          bind:this={sqlFilterRef}
+          layer={mapStudioStore.selectedLayer}
+          fields={layerFields}
+          onFilterChange={handleSqlFilterChange}
         />
       </aside>
     {/if}

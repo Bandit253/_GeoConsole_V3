@@ -278,7 +278,6 @@
 
 <style>
   .style-editor {
-    height: 100%;
     display: flex;
     flex-direction: column;
   }
@@ -297,8 +296,6 @@
   }
 
   .style-content {
-    flex: 1;
-    overflow-y: auto;
     padding: 16px;
   }
 

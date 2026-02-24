@@ -1,28 +1,15 @@
 version: '3.8'
 
 services:
-  # Valhalla routing engine
-  valhalla:
-    image: ghcr.io/gis-ops/docker-valhalla/valhalla:latest
-    container_name: geoconsole-valhalla
-    ports:
-      - "8002:8002"
+  # Frontend builder (build-only, does not run continuously)
+  # Usage: docker compose run --rm frontend-builder
+  frontend-builder:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: geoconsole-frontend-builder
     volumes:
-      - ./valhalla_tiles:/custom_files
-    environment:
-      - tile_urls=https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf
-      - use_tiles_ignore_pbf=False
-      - build_elevation=False
-      - build_admins=True
-      - build_time_zones=True
-      - force_rebuild=False
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/status"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
-volumes:
-  valhalla_tiles:
+      - ./frontend/dist:/app/dist
+    command: sh -c "npm run build && echo 'Build complete. Files in ./frontend/dist/'"
+    profiles:
+      - build

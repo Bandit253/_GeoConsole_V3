@@ -167,6 +167,43 @@ export async function getArrowTableForDeckGL(
   return table;
 }
 
+/**
+ * Query cached dataset with a SQL WHERE filter, returning Arrow Table for deck.gl.
+ * Runs entirely in browser DuckDB WASM — no server round-trip.
+ */
+export async function queryFilteredArrowTable(
+  datasetId: string,
+  whereClause?: string
+): Promise<import('apache-arrow').Table> {
+  const { duckdbService } = await import('./duckdb');
+  const table = await duckdbService.queryWithFilter(datasetId, whereClause);
+  console.log(`Filtered query for ${datasetId}: ${table.numRows} rows${whereClause ? ` (WHERE ${whereClause})` : ''}`);
+  return table;
+}
+
+/**
+ * Get unique values for a column from cached dataset (for categorized styling).
+ */
+export async function getColumnUniqueValues(
+  datasetId: string,
+  columnName: string,
+  limit = 100
+): Promise<(string | number)[]> {
+  const { duckdbService } = await import('./duckdb');
+  return duckdbService.getColumnUniqueValues(datasetId, columnName, limit);
+}
+
+/**
+ * Get min/max range for a numeric column from cached dataset (for graduated styling).
+ */
+export async function getColumnRange(
+  datasetId: string,
+  columnName: string
+): Promise<{ min: number; max: number } | null> {
+  const { duckdbService } = await import('./duckdb');
+  return duckdbService.getColumnRange(datasetId, columnName);
+}
+
 // Routing API
 export interface RouteRequest {
   locations: [number, number][];

@@ -1,0 +1,35 @@
+[Unit]
+Description=GeoConsole V3 - Geospatial Map Studio
+After=network.target
+
+[Service]
+Type=simple
+User=geoconsole
+Group=geoconsole
+WorkingDirectory=/opt/geoconsole
+ExecStart=/opt/geoconsole/geoconsole-v3
+
+# Environment variables
+Environment="RUST_LOG=info,geoconsole_v3=debug"
+# HOST defaults to 127.0.0.1 (localhost only - use reverse proxy or set HOST=0.0.0.0 for direct access)
+Environment="PORT=3003"
+Environment="STATIC_DIR=/opt/geoconsole/frontend/dist"
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/geoconsole/data
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=geoconsole
+
+[Install]
+WantedBy=multi-user.target

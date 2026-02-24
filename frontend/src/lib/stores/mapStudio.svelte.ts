@@ -125,6 +125,10 @@ function createMapStudioStore() {
       state.updatedAt = new Date();
     },
 
+    setSqlFilter(layerId: string, sqlFilter: string | undefined) {
+      this.updateLayer(layerId, { sqlFilter });
+    },
+
     setLayerData(layerId: string, data: GeoJSON.FeatureCollection) {
       this.updateLayer(layerId, { data, featureCount: data.features.length });
     },
