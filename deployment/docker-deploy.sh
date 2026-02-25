@@ -31,42 +31,42 @@ echo "Using: $DOCKER_COMPOSE"
 
 echo ""
 echo "Step 1: Building frontend..."
-$DOCKER_COMPOSE --profile build run --rm frontend-builder
+$DOCKER_COMPOSE -f docker-compose.yml --profile build run --rm frontend-builder
 
 echo ""
 echo "Step 2: Building backend Docker image..."
-$DOCKER_COMPOSE build backend
+$DOCKER_COMPOSE -f docker-compose.yml build backend
 
 echo ""
 echo "Step 3: Starting backend service..."
-$DOCKER_COMPOSE up -d backend
+$DOCKER_COMPOSE -f docker-compose.yml up -d backend
 
 echo ""
 echo "Step 4: Waiting for service to be healthy..."
 sleep 5
 
 # Check health
-if $DOCKER_COMPOSE ps | grep -q "healthy"; then
+if $DOCKER_COMPOSE -f docker-compose.yml ps | grep -q "healthy"; then
     echo "✓ Service is healthy"
 else
     echo "⚠ Service may not be healthy yet, checking logs..."
-    $DOCKER_COMPOSE logs backend --tail 20
+    $DOCKER_COMPOSE -f docker-compose.yml logs backend --tail 20
 fi
 
 echo ""
 echo "=== Deployment Complete ==="
 echo ""
 echo "Service status:"
-$DOCKER_COMPOSE ps
+$DOCKER_COMPOSE -f docker-compose.yml ps
 
 echo ""
 echo "Test health endpoint:"
 echo "  curl http://localhost:3003/health"
 echo ""
 echo "View logs:"
-echo "  $DOCKER_COMPOSE logs -f backend"
+echo "  $DOCKER_COMPOSE -f docker-compose.yml logs -f backend"
 echo ""
 echo "Stop service:"
-echo "  $DOCKER_COMPOSE down"
+echo "  $DOCKER_COMPOSE -f docker-compose.yml down"
 echo ""
 echo "Update Cloudflare Tunnel route to: http://127.0.0.1:3003"
