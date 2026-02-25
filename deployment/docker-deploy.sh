@@ -23,7 +23,7 @@ if docker compose version &> /dev/null; then
 elif command -v docker-compose &> /dev/null; then
     DOCKER_COMPOSE="docker-compose"
 else
-    echo "ERROR: Docker Compose is not installed"
+    echo "ERROR: Docker Compose is not installe d"
     exit 1
 fi
 
