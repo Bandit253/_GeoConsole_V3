@@ -17,49 +17,56 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker compose &> /dev/null; then
+# Detect docker compose command (v2 uses space, v1 uses hyphen)
+if docker compose version &> /dev/null; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v docker-compose &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
     echo "ERROR: Docker Compose is not installed"
     exit 1
 fi
 
+echo "Using: $DOCKER_COMPOSE"
+
 echo ""
 echo "Step 1: Building frontend..."
-docker compose --profile build run --rm frontend-builder
+$DOCKER_COMPOSE --profile build run --rm frontend-builder
 
 echo ""
 echo "Step 2: Building backend Docker image..."
-docker compose build backend
+$DOCKER_COMPOSE build backend
 
 echo ""
 echo "Step 3: Starting backend service..."
-docker compose up -d backend
+$DOCKER_COMPOSE up -d backend
 
 echo ""
 echo "Step 4: Waiting for service to be healthy..."
 sleep 5
 
 # Check health
-if docker compose ps | grep -q "healthy"; then
+if $DOCKER_COMPOSE ps | grep -q "healthy"; then
     echo "✓ Service is healthy"
 else
     echo "⚠ Service may not be healthy yet, checking logs..."
-    docker compose logs backend --tail 20
+    $DOCKER_COMPOSE logs backend --tail 20
 fi
 
 echo ""
 echo "=== Deployment Complete ==="
 echo ""
 echo "Service status:"
-docker compose ps
+$DOCKER_COMPOSE ps
 
 echo ""
 echo "Test health endpoint:"
 echo "  curl http://localhost:3003/health"
 echo ""
 echo "View logs:"
-echo "  docker compose logs -f backend"
+echo "  $DOCKER_COMPOSE logs -f backend"
 echo ""
 echo "Stop service:"
-echo "  docker compose down"
+echo "  $DOCKER_COMPOSE down"
 echo ""
 echo "Update Cloudflare Tunnel route to: http://127.0.0.1:3003"
