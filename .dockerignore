@@ -1,0 +1,44 @@
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data
+data/
+*.parquet
+*.geoparquet
+valhalla_tiles/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+.windsurf/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Deployment
+deployment/
+
+# Documentation
+*.md
+anthropic_assessment.md

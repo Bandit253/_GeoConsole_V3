@@ -3,7 +3,12 @@ set -e
 
 echo "Building frontend with Docker..."
 
-cd "$(dirname "$0")/.."
+# Change to project root (parent of deployment/)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
+echo "Project root: $PROJECT_ROOT"
 
 # Build the Docker image
 docker build -t geoconsole-frontend-builder ./frontend

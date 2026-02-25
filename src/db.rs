@@ -149,6 +149,15 @@ impl DuckDbManager {
         let conn = Connection::open(&db_path)?;
         tracing::info!("DuckDB file: {} (new={})", db_path.display(), is_new);
 
+        // Set DuckDB home directory to data directory (for extensions)
+        let home_dir = data_dir.canonicalize()
+            .unwrap_or_else(|_| data_dir.clone())
+            .to_string_lossy()
+            .to_string();
+        let set_home_sql = format!("SET home_directory='{}'", home_dir.replace('\'', "''"));
+        conn.execute_batch(&set_home_sql)?;
+        tracing::info!("DuckDB home directory: {}", home_dir);
+
         // Load extensions
         if conn.execute_batch("LOAD spatial; LOAD parquet;").is_err() {
             if install_extensions {

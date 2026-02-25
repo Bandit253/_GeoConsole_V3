@@ -53,12 +53,16 @@ cd /tmp/geoconsole-build
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
+# Install Node.js (if not installed)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
 # Build backend (release mode)
 cargo build --release
 
-# Build frontend (requires Docker)
-chmod +x deployment/build-frontend.sh
-./deployment/build-frontend.sh
+# Build frontend
+chmod +x deployment/build-frontend-native.sh
+./deployment/build-frontend-native.sh
 
 # Deploy
 sudo ./deployment/deploy.sh

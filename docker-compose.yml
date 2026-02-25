@@ -1,6 +1,30 @@
 version: '3.8'
 
 services:
+  # Backend service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: geoconsole-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3003:3003"
+    volumes:
+      - ./data:/app/data
+      - ./frontend/dist:/app/frontend/dist:ro
+    environment:
+      - RUST_LOG=info,geoconsole_v3=debug
+      - HOST=0.0.0.0
+      - PORT=3003
+      - STATIC_DIR=/app/frontend/dist
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   # Frontend builder (build-only, does not run continuously)
   # Usage: docker compose run --rm frontend-builder
   frontend-builder:
@@ -13,3 +37,6 @@ services:
     command: sh -c "npm run build && echo 'Build complete. Files in ./frontend/dist/'"
     profiles:
       - build
+
+volumes:
+  data:
