@@ -55,6 +55,9 @@ async fn main() -> Result<()> {
         // Dataset API
         .route("/api/datasets", get(api::datasets::list_datasets))
         .route("/api/datasets", post(api::datasets::upload_dataset))
+        .route("/api/datasets/upload/chunk", post(api::datasets::upload_chunk))
+        .route("/api/datasets/from-sql", post(api::datasets::create_from_sql))
+        .route("/api/datasets/preview-sql", post(api::datasets::preview_sql))
         .route("/api/datasets/:id", get(api::datasets::get_dataset))
         .route("/api/datasets/:id", delete(api::datasets::delete_dataset))
         // Spatial data API (Arrow IPC)
@@ -74,8 +77,8 @@ async fn main() -> Result<()> {
         .merge(api_router)
         // Serve static files for all other routes (SPA fallback)
         .fallback_service(ServeDir::new(static_path).append_index_html_on_directories(true))
-        // Body size limit (100MB for large spatial files)
-        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
+        // Body size limit (500MB for large spatial files)
+        .layer(DefaultBodyLimit::max(500 * 1024 * 1024))
         // COOP/COEP headers (required for DuckDB-WASM SharedArrayBuffer)
         // Cloudflare must be configured to pass these through
         .layer(SetResponseHeaderLayer::if_not_present(

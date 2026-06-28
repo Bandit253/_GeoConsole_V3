@@ -206,6 +206,24 @@ pub struct DatasetListResponse {
     pub total: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateFromSqlRequest {
+    pub sql: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PreviewSqlRequest {
+    pub sql: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SqlPreviewResponse {
+    pub columns: Vec<ColumnInfo>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub row_count: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MapListResponse {
     pub maps: Vec<MapConfig>,

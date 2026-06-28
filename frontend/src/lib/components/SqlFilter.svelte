@@ -95,7 +95,7 @@
       <textarea
         class="filter-input"
         class:has-error={!!error}
-        placeholder='e.g. "population" > 10000 AND "state" = &#39;NSW&#39;'
+        placeholder='e.g. "population" > 10000 AND "state" = &#39;VIC&#39;'
         bind:value={filterText}
         onkeydown={handleKeydown}
         rows="3"

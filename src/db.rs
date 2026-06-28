@@ -1,5 +1,7 @@
 use duckdb::Connection;
 use duckdb::arrow::ipc::writer::StreamWriter;
+use duckdb::arrow::datatypes::{Schema, Field};
+use duckdb::arrow::record_batch::RecordBatch;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -150,10 +152,15 @@ impl DuckDbManager {
         tracing::info!("DuckDB file: {} (new={})", db_path.display(), is_new);
 
         // Set DuckDB home directory to data directory (for extensions)
-        let home_dir = data_dir.canonicalize()
+        let mut home_dir = data_dir.canonicalize()
             .unwrap_or_else(|_| data_dir.clone())
             .to_string_lossy()
             .to_string();
+        // Strip Windows extended-length path prefix (\\?\) — DuckDB doesn't understand it
+        if home_dir.starts_with(r"\\?\") {
+            home_dir = home_dir[4..].to_string();
+        }
+        home_dir = home_dir.replace('\\', "/");
         let set_home_sql = format!("SET home_directory='{}'", home_dir.replace('\'', "''"));
         conn.execute_batch(&set_home_sql)?;
         tracing::info!("DuckDB home directory: {}", home_dir);
@@ -690,6 +697,7 @@ impl DuckDbManager {
         let estimated_size = (total_limit as usize).min(100_000) * 200;
         let mut ipc_buffer = Vec::with_capacity(estimated_size);
         let mut writer: Option<StreamWriter<&mut Vec<u8>>> = None;
+        let mut geoarrow_schema: Option<Arc<Schema>> = None;
         let mut current_offset = start_offset;
         let mut remaining = total_limit;
         let mut total_rows: usize = 0;
@@ -722,14 +730,21 @@ impl DuckDbManager {
                 let w = match writer.as_mut() {
                     Some(w) => w,
                     None => {
-                        let schema = batch.schema();
+                        let schema = Self::annotate_geoarrow_schema(&batch.schema());
+                        geoarrow_schema = Some(Arc::clone(&schema));
                         writer = Some(StreamWriter::try_new(&mut ipc_buffer, &schema)
                             .map_err(|e| AppError::Internal(format!("Arrow IPC writer error: {}", e)))?);
                         writer.as_mut().unwrap()
                     }
                 };
                 chunk_rows += batch.num_rows();
-                w.write(&batch)
+                let annotated_batch = if let Some(ref schema) = geoarrow_schema {
+                    let columns = batch.columns().to_vec();
+                    RecordBatch::try_new(Arc::clone(schema), columns).unwrap_or(batch)
+                } else {
+                    batch
+                };
+                w.write(&annotated_batch)
                     .map_err(|e| AppError::Internal(format!("Arrow IPC write error: {}", e)))?;
             }
             
@@ -755,6 +770,24 @@ impl DuckDbManager {
 
         tracing::debug!("Arrow IPC: {} total rows, {} bytes for dataset {}", total_rows, ipc_buffer.len(), dataset_id);
         Ok(ipc_buffer)
+    }
+
+    /// Annotate the Arrow schema to mark the geometry field as GeoArrow WKB.
+    /// This enables zero-copy Arrow → GPU rendering via GeoArrow layers in the frontend.
+    fn annotate_geoarrow_schema(schema: &duckdb::arrow::datatypes::SchemaRef) -> Arc<Schema> {
+        let fields: Vec<Field> = schema.fields().iter().map(|f| {
+            if f.name() == "geometry" {
+                let mut metadata = f.metadata().clone();
+                metadata.insert(
+                    "ARROW:extension:name".to_string(),
+                    "geoarrow.wkb".to_string(),
+                );
+                f.as_ref().clone().with_metadata(metadata)
+            } else {
+                f.as_ref().clone()
+            }
+        }).collect();
+        Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
     }
 
     /// Get features as GeoJSON with all property columns included
@@ -921,6 +954,136 @@ impl DuckDbManager {
         conn.execute("DELETE FROM _meta_datasets WHERE id = ?", duckdb::params![id.to_string()])?;
 
         Ok(())
+    }
+
+    /// Create a new persistent dataset from an arbitrary DuckDB SQL SELECT query.
+    /// Supports all DuckDB standard and spatial (ST_*) functions.
+    /// If the query result contains a geometry column the dataset is fully spatially indexed;
+    /// otherwise it is saved as a non-spatial (tabular) dataset.
+    pub fn create_dataset_from_sql(&self, sql: &str, name: &str) -> AppResult<Dataset> {
+        let conn = self.write_conn()?;
+        let id = Uuid::new_v4();
+        let table_name = format!("dataset_{}", id.to_string().replace('-', "_"));
+
+        let create_sql = format!("CREATE TABLE {} AS ({})", table_name, sql);
+        conn.execute(&create_sql, [])
+            .map_err(|e| AppError::BadRequest(format!("SQL error: {}", e)))?;
+
+        // Try full spatial finalization (geometry detection, reprojection, bbox columns).
+        // Fall back to non-spatial if the result has no geometry column.
+        match self.finalize_dataset(&conn, id, name, table_name.clone()) {
+            Ok(dataset) => Ok(dataset),
+            Err(AppError::BadRequest(ref msg)) if msg.contains("No geometry") => {
+                self.finalize_nonspatial_dataset(&conn, id, name, table_name)
+            }
+            Err(e) => {
+                let _ = conn.execute(&format!("DROP TABLE IF EXISTS {}", table_name), []);
+                Err(e)
+            }
+        }
+    }
+
+    /// Finalize a non-spatial (no geometry column) SQL-derived dataset.
+    fn finalize_nonspatial_dataset(
+        &self,
+        conn: &Connection,
+        id: Uuid,
+        name: &str,
+        table_name: String,
+    ) -> AppResult<Dataset> {
+        let columns = self.get_column_info(conn, &table_name)?;
+        let feature_count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM {}", table_name),
+            [],
+            |row| row.get(0),
+        )?;
+        let now = Utc::now();
+        let dataset = Dataset {
+            id,
+            name: name.to_string(),
+            table_name,
+            geometry_column: String::new(),
+            geometry_type: GeometryType::Unknown,
+            srid: 4326,
+            feature_count,
+            bounds: None,
+            columns,
+            created_at: now,
+            updated_at: now,
+        };
+        self.persist_dataset_meta(conn, &dataset)?;
+        self.datasets.write().map_err(lock_err)?.insert(id, dataset.clone());
+        Ok(dataset)
+    }
+
+    /// Execute a SELECT query and return the first `limit` rows for preview.
+    /// Geometry columns are converted to WKT text; all others are cast to VARCHAR.
+    /// Returns column metadata and JSON-serialisable rows.
+    pub fn preview_sql(&self, sql: &str, limit: usize) -> AppResult<crate::models::SqlPreviewResponse> {
+        use crate::models::{ColumnInfo, SqlPreviewResponse};
+
+        let conn = self.read_conn()?;
+        let limit = limit.min(500).max(1);
+
+        // --- Step 1: describe query columns ---
+        let desc_sql = format!("DESCRIBE SELECT * FROM ({}) AS _t", sql);
+        let mut stmt = conn.prepare(&desc_sql)
+            .map_err(|e| AppError::BadRequest(format!("SQL syntax error: {}", e)))?;
+
+        let col_meta: Vec<ColumnInfo> = stmt
+            .query_map([], |row| {
+                Ok(ColumnInfo {
+                    name: row.get::<_, String>(0)?,
+                    data_type: row.get::<_, String>(1)?,
+                    nullable: true,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if col_meta.is_empty() {
+            return Err(AppError::BadRequest("Query returned no columns".to_string()));
+        }
+
+        // --- Step 2: build SELECT casting geometry → WKT, everything else → VARCHAR ---
+        let select_parts: Vec<String> = col_meta.iter().map(|col| {
+            let qi = format!("\"{}\"", col.name.replace('"', "\"\""));
+            if col.data_type.to_uppercase() == "GEOMETRY" {
+                format!("COALESCE(ST_AsText({}), 'NULL') AS {}", qi, qi)
+            } else {
+                format!("TRY_CAST({} AS VARCHAR) AS {}", qi, qi)
+            }
+        }).collect();
+
+        let exec_sql = format!(
+            "SELECT {} FROM ({}) AS _t LIMIT {}",
+            select_parts.join(", "), sql, limit
+        );
+
+        // --- Step 3: collect rows ---
+        let col_count = col_meta.len();
+        let mut stmt = conn.prepare(&exec_sql)
+            .map_err(|e| AppError::BadRequest(format!("Preview error: {}", e)))?;
+
+        let rows: Vec<Vec<serde_json::Value>> = stmt
+            .query_map([], |row| {
+                let mut values = Vec::with_capacity(col_count);
+                for i in 0..col_count {
+                    let v: Option<String> = row.get(i)?;
+                    values.push(v);
+                }
+                Ok(values)
+            })?
+            .filter_map(|r| r.ok())
+            .map(|row| {
+                row.into_iter()
+                    .map(|v| v.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null))
+                    .collect()
+            })
+            .collect();
+
+        let row_count = rows.len();
+        Ok(SqlPreviewResponse { columns: col_meta, rows, row_count })
     }
 
     // ========================================================================

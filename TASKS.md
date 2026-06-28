@@ -316,6 +316,114 @@ Map Studio application with Rust backend, DuckDB spatial database, Arrow IPC dat
   - `frontend/src/lib/components/MapStudio.svelte` — `handleFeatureClick()`, popup lifecycle
   - `frontend/src/app.css` — dark-themed popup styles
 
+#### ✅ Task 21b: DuckDB WASM Table Creation Race Condition
+- **Date:** March 1, 2026
+- **Description:** Fix "Table already exists" error when loading datasets into browser DuckDB WASM
+- **Root Cause:**
+  - `getArrowTableForDeckGL()` checked `isCached()` before `init()` ran, so the cache Map was empty
+  - This returned a false negative, triggering an unnecessary server fetch + `insertArrowTable(create: true)`
+  - Meanwhile, `init()` populated the cache via `rehydrateFromIndexedDB()` or OPFS persistence, creating the same table
+  - Two concurrent `insertArrowTable(create: true)` calls raced on the DuckDB WASM worker → "already exists" error
+  - `rehydrateFromIndexedDB()` also lacked `DROP TABLE IF EXISTS` before insert, failing on partial OPFS state
+- **Fix:**
+  1. Call `await duckdbService.init()` before `isCached()` in `getArrowTableForDeckGL()` — prevents false-negative cache checks
+  2. Add `DROP TABLE IF EXISTS` in `rehydrateFromIndexedDB()` before `insertArrowTable` — handles partial OPFS state
+  3. Wrap `insertArrowTable` in `loadFromArrowIPC()` with try-catch retry on "already exists" — belt-and-suspenders defense
+- **Files Modified:**
+  - `frontend/src/lib/services/api.ts` — `getArrowTableForDeckGL()` init before cache check
+  - `frontend/src/lib/services/duckdb.ts` — `rehydrateFromIndexedDB()` DROP guard, `loadFromArrowIPC()` retry logic
+
+#### ✅ Task 22: GeoArrow WKB Extension Metadata (Known Limitation)
+- **Date:** March 1, 2026
+- **Description:** Investigated zero-copy GeoArrow rendering path — determined WKB fallback is correct and permanent for DuckDB geometry output
+- **Finding:**
+  - `GeoArrowScatterplotLayer` / `GeoArrowPathLayer` / `GeoArrowPolygonLayer` require **native Arrow struct types** (e.g. `geoarrow.point = Struct<x: Float64, y: Float64>`) — NOT WKB binary
+  - DuckDB outputs `ST_AsWKB(geometry)` as a plain Arrow `Binary` column — incompatible with GeoArrow layers
+  - `geoarrow.wkb` extension type passes the `extName.startsWith('geoarrow.')` check but still causes `renderLayers()` to throw on every animation frame: *"getPosition should pass in an arrow Vector of Point or MultiPoint type"*
+  - DuckDB WASM also strips Arrow field metadata on re-query, making annotation futile
+- **Resolution:**
+  - `annotate_geoarrow_schema()` in backend preserved (harmless — provides correct metadata for external consumers)
+  - `isGeoArrowByMeta` check in `tryCreateGeoArrowLayer()` hardened to explicitly exclude `geoarrow.wkb`
+  - WKB fallback path (row-by-row JS parsing) is the correct and only viable path for DuckDB geometry
+  - Zero-copy GeoArrow would require backend to output native struct coordinates (future task)
+- **Files Modified:**
+  - `frontend/src/lib/services/deckgl.ts` — `isGeoArrowByMeta` excludes `geoarrow.wkb`
+
+#### ✅ Task 23: Point Clustering Symbolisation
+- **Date:** March 1, 2026
+- **Description:** Add client-side point clustering for Point geometry layers
+- **Features:**
+  - Toggle clustering per layer via Style Editor checkbox (Point layers only)
+  - Cluster radius slider (10–200 px, default 60)
+  - Clusters rendered as graduated circles: yellow (<10), orange (<100), red (≥100 points)
+  - Count label rendered as white `TextLayer` centred on each cluster
+  - Individual (unclustered) points rendered at normal radius with layer fill colour
+  - Clusters re-compute on map zoom via `zoomend` event (viewport-aware via `getClusters`)
+  - Toggling cluster off restores GeoArrow / WKB fallback rendering
+- **Implementation:**
+  - `supercluster` npm package for fast client-side point clustering
+  - `DeckGLService.ensureClusterIndex()` — builds/caches supercluster index per layer (rebuilt only if radius or maxZoom changes)
+  - `DeckGLService.buildClusterLayers()` — returns `[ScatterplotLayer, TextLayer]` for current viewport/zoom
+  - `DeckGLService.updateClusterZoom()` — public method called from MapLibre `zoomend`
+  - `addArrowLayer()` — cluster path enters before GeoArrow/WKB check
+  - `updateLayerStyle()` — handles cluster enable/disable with index cleanup
+  - `removeLayer()` / `dispose()` — clean up cluster indices and settings
+  - `updateOverlay()` — flattens `any[]` entries (cluster sub-layers) alongside single layers
+- **Files Modified:**
+  - `frontend/package.json` — `supercluster`, `@types/supercluster`
+  - `frontend/src/lib/types/mapStudio.ts` — `cluster?`, `clusterRadius?`, `clusterMaxZoom?` on `LayerStyle`
+  - `frontend/src/lib/services/deckgl.ts` — `TextLayer` import, `Supercluster` import, clustering methods, `DeckLayerStyle` fields, `updateOverlay` array flattening
+  - `frontend/src/lib/components/StyleEditor.svelte` — cluster toggle + radius slider UI
+  - `frontend/src/lib/components/MapStudio.svelte` — `zoomend` listener, cluster fields in `loadLayerData` and `applyStyleToMap`
+
+#### ✅ Task 25: Chunked File Upload (Bypass Cloudflare 100MB Limit)
+- **Date:** March 8, 2026
+- **Description:** Split large spatial files into 25MB chunks on the client, reassemble on the server, bypassing Cloudflare Tunnel's per-request body limit
+- **Problem:** Cloudflare blocks single HTTP requests > ~100MB before they reach the backend, making large file uploads silently fail
+- **Solution:**
+  - Backend: new `POST /api/datasets/upload/chunk` endpoint — accepts `session_id`, `chunk_index`, `total_chunks`, `filename`, `data`; writes chunks to `data/chunks/{session_id}/`; on final chunk: reassembles and calls `load_spatial_file`; returns 202 while pending, 200 + Dataset when complete
+  - Frontend: `uploadDatasetChunked()` in `api.ts` — splits `File` into 25MB slices, POSTs sequentially with progress callback
+  - UI: replaced static "Uploading and processing..." with animated progress bar + percentage
+- **Files Modified:**
+  - `src/api/datasets.rs` — `upload_chunk()` handler
+  - `src/main.rs` — `POST /api/datasets/upload/chunk` route
+  - `frontend/src/lib/services/api.ts` — `uploadDatasetChunked()`, `CHUNK_SIZE = 25MB`
+  - `frontend/src/lib/components/MapStudio.svelte` — progress bar UI, use `uploadDatasetChunked`
+
+#### ✅ Task 26: Viewport Streaming for Large Datasets (> 2M Features)
+- **Date:** March 8, 2026
+- **Description:** Fix rendering of very large datasets by streaming only the current viewport, purging WASM memory between viewport changes
+- **Problem (bug):** After the first bbox-filtered fetch, `isDatasetCached()` returned `true` so `reloadVisibleLayers()` always skipped re-fetching — users panning away from the initial viewport saw no features
+- **Solution:**
+  - Added `STREAMING_THRESHOLD = 2_000_000` features
+  - `reloadVisibleLayers()` now distinguishes streaming datasets (> 2M) from normal datasets
+  - Streaming datasets: `removeFromCache()` before every viewport fetch, always re-fetch with new bbox
+  - Normal datasets (≤ 2M): original behavior — cache once, skip on viewport change
+  - `loadLayerData()` uses short TTL (5 min) for streaming datasets so WASM evicts stale viewport data
+- **Files Modified:**
+  - `frontend/src/lib/components/MapStudio.svelte` — `STREAMING_THRESHOLD`, `reloadVisibleLayers` streaming path, `loadLayerData` short TTL
+
+#### ✅ Task 27: SQL Console — Create Datasets from Arbitrary DuckDB SQL
+- **Date:** March 8, 2026
+- **Description:** Full-featured SQL console that lets users write arbitrary DuckDB SQL (including spatial ST_* functions), preview results, and persist them as new datasets
+- **Backend:**
+  - `POST /api/datasets/from-sql` — accepts `{ sql, name }`, executes in server DuckDB, materialises result as a new table, runs full spatial finalisation (geometry detection, SRID reprojection, per-row bbox columns); falls back to non-spatial dataset if no geometry column found
+  - `POST /api/datasets/preview-sql` — accepts `{ sql }`, DESCRIBE + cast-to-VARCHAR preview, returns `{ columns, rows, row_count }` (up to 200 rows) without persisting anything
+  - `db.rs` — `create_dataset_from_sql`, `finalize_nonspatial_dataset`, `preview_sql`
+  - `models.rs` — `CreateFromSqlRequest`, `PreviewSqlRequest`, `SqlPreviewResponse`
+- **Frontend:**
+  - `SqlConsole.svelte` — modal dialog with: available-dataset table-name chips (click-to-insert), SQL snippet buttons (SELECT, WHERE, JOIN, etc.) and spatial snippet buttons (ST_Buffer, ST_Intersects, ST_Distance, ST_Area, ST_Centroid, …), full monospace SQL editor (Ctrl+Enter to run), scrollable results table with column types, dataset name input, Save as Dataset button; on save — new dataset is added to store and immediately loaded as a map layer
+  - `api.ts` — `createDatasetFromSql()`, `previewSql()`, `SqlPreviewResponse` interface
+  - `MapStudio.svelte` — 🗄️ SQL button in toolbar, `showSqlConsole` state, `SqlConsole` panel with `onDatasetCreated` handler
+- **Files Modified:**
+  - `src/models.rs`
+  - `src/db.rs`
+  - `src/api/datasets.rs`
+  - `src/main.rs`
+  - `frontend/src/lib/services/api.ts`
+  - `frontend/src/lib/components/SqlConsole.svelte` *(new)*
+  - `frontend/src/lib/components/MapStudio.svelte`
+
 #### ⬜ Task 21: Label Support
 - **Description:** Text labels on map features
 - **Features:**

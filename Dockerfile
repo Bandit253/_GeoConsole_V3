@@ -1,5 +1,5 @@
 # Multi-stage build for GeoConsole V3 backend
-FROM rust:1.75-slim as builder
+FROM rustlang/rust:nightly-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -27,13 +27,14 @@ COPY src ./src
 # Build the application
 RUN cargo build --release
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage - use trixie (testing) for newer GLIBC to match nightly Rust
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user
@@ -43,6 +44,10 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/geoconsole-v3 ./geoconsole-v3
+
+# Bust cache for frontend assets (pass --build-arg CACHEBUST=$(date) to force refresh)
+ARG CACHEBUST=1
+COPY frontend/dist /app/frontend/dist
 
 # Create data directory
 RUN mkdir -p data && chown -R geoconsole:geoconsole /app

@@ -3,12 +3,13 @@
   import maplibregl from 'maplibre-gl';
   import { mapStudioStore } from '../stores/mapStudio.svelte';
   import { BASEMAPS, type MapLayer } from '../types/mapStudio';
-  import { listDatasets, getArrowTableForDeckGL, queryFilteredArrowTable, uploadDataset, isDatasetCached, removeFromCache } from '../services/api';
+  import { listDatasets, getArrowTableForDeckGL, queryFilteredArrowTable, uploadDatasetChunked, isDatasetCached, removeFromCache } from '../services/api';
   import { deckglService, type PickedFeatureInfo } from '../services/deckgl';
   import LayerPanel from './LayerPanel.svelte';
   import StyleEditor from './StyleEditor.svelte';
   import SqlFilter from './SqlFilter.svelte';
   import BasemapSelector from './BasemapSelector.svelte';
+  import SqlConsole from './SqlConsole.svelte';
 
   let mapContainer: HTMLDivElement;
   let map: maplibregl.Map | null = null;
@@ -16,7 +17,9 @@
 
   // Reactive state
   let showAddLayerDialog = $state(false);
+  let showSqlConsole = $state(false);
   let uploading = $state(false);
+  let uploadProgress = $state(0);
   let error = $state<string | null>(null);
   let previousBbox: [number, number, number, number] | null = null;
   let moveEndTimer: ReturnType<typeof setTimeout> | null = null;
@@ -76,6 +79,9 @@
         pitch: map.getPitch()
       });
 
+      // Refresh cluster layers for new viewport (pan changes visible clusters)
+      deckglService.updateClusterZoom(map.getZoom());
+
       // Debounced viewport reload
       if (moveEndTimer) clearTimeout(moveEndTimer);
       moveEndTimer = setTimeout(() => reloadVisibleLayers(), 300);
@@ -88,6 +94,10 @@
         deckglService.onFeatureClick = handleFeatureClick;
         console.log('deck.gl overlay initialized on map load');
       }
+    });
+
+    map.on('zoomend', () => {
+      if (map) deckglService.updateClusterZoom(map.getZoom());
     });
 
     // Close popup on map click (no feature)
@@ -114,10 +124,11 @@
     if (!file) return;
 
     uploading = true;
+    uploadProgress = 0;
     error = null;
 
     try {
-      const dataset = await uploadDataset(file);
+      const dataset = await uploadDatasetChunked(file, (pct) => { uploadProgress = pct; });
       mapStudioStore.setDatasets([...mapStudioStore.datasets, dataset]);
       
       // Automatically add as layer
@@ -129,6 +140,7 @@
       error = e instanceof Error ? e.message : 'Upload failed';
     } finally {
       uploading = false;
+      uploadProgress = 0;
       input.value = '';
     }
   }
@@ -156,14 +168,27 @@
   // Below this we load the full dataset once and let deck.gl clip on the GPU.
   const BBOX_FILTER_THRESHOLD = 500_000;
 
+  // Datasets above this threshold stream only the current viewport.
+  // On each pan/zoom the previous viewport data is purged from WASM and replaced.
+  const STREAMING_THRESHOLD = 2_000_000;
+
   async function reloadVisibleLayers() {
     const bbox = getMapBbox();
     if (!bbox || !bboxChangedSignificantly(bbox)) return;
     previousBbox = bbox;
 
     for (const layer of mapStudioStore.state.layers) {
-      if (layer.visible && layer.datasetId) {
-        // Skip reload if already cached — deck.gl handles viewport clipping
+      if (!layer.visible || !layer.datasetId) continue;
+
+      const dataset = mapStudioStore.datasets.find(d => d.id === layer.datasetId);
+      const isStreaming = dataset && dataset.feature_count > STREAMING_THRESHOLD;
+
+      if (isStreaming) {
+        // Streaming datasets: purge stale viewport data and re-fetch with new bbox
+        await removeFromCache(layer.datasetId);
+        await loadLayerData(layer, bbox);
+      } else {
+        // Small datasets: skip if already cached — deck.gl handles viewport clipping
         if (isDatasetCached(layer.datasetId)) continue;
         await loadLayerData(layer, bbox);
       }
@@ -178,12 +203,15 @@
       
       // Only use server-side bbox filtering for very large datasets
       const dataset = mapStudioStore.datasets.find(d => d.id === layer.datasetId);
+      const isStreaming = dataset && dataset.feature_count > STREAMING_THRESHOLD;
       const useServerBbox = bbox && dataset && dataset.feature_count > BBOX_FILTER_THRESHOLD;
+      // Streaming datasets use a short TTL so viewport refresh evicts stale data
+      const ttlMs = isStreaming ? 5 * 60 * 1000 : undefined;
 
       const arrowTable = await getArrowTableForDeckGL(
         layer.datasetId,
         layer.geometryType || 'Polygon',
-        undefined,
+        ttlMs,
         useServerBbox ? bbox : undefined
       );
       
@@ -196,6 +224,9 @@
         strokeWidth: layer.style.strokeWidth || 1,
         radius: layer.style.radius || 5,
         opacity: layer.opacity,
+        cluster: layer.style.cluster,
+        clusterRadius: layer.style.clusterRadius,
+        clusterMaxZoom: layer.style.clusterMaxZoom,
       };
       
       deckglService.addArrowLayer(
@@ -298,6 +329,10 @@
       colors: fullStyle.colors,
       breaks: fullStyle.breaks,
       categories: fullStyle.categories,
+      // Clustering
+      cluster: fullStyle.cluster,
+      clusterRadius: fullStyle.clusterRadius,
+      clusterMaxZoom: fullStyle.clusterMaxZoom,
     });
   }
 
@@ -436,6 +471,9 @@
       <button class="btn-primary" onclick={() => showAddLayerDialog = true}>
         ➕ Add Layer
       </button>
+      <button class="btn-secondary" onclick={() => showSqlConsole = true}>
+        🗄️ SQL
+      </button>
     </div>
 
     <div class="toolbar-right">
@@ -528,7 +566,16 @@
           />
 
           {#if uploading}
-            <p class="status">Uploading and processing...</p>
+            <div class="upload-progress">
+              <div class="upload-progress-bar" style="width: {uploadProgress}%"></div>
+            </div>
+            <p class="status">
+              {#if uploadProgress < 100}
+                Uploading... {uploadProgress}%
+              {:else}
+                Processing...
+              {/if}
+            </p>
           {/if}
 
           {#if error}
@@ -563,6 +610,21 @@
         </div>
       </div>
     </div>
+  {/if}
+
+  {#if showSqlConsole}
+    <SqlConsole
+      datasets={mapStudioStore.datasets}
+      onClose={() => showSqlConsole = false}
+      onDatasetCreated={async (dataset) => {
+        mapStudioStore.setDatasets([...mapStudioStore.datasets, dataset]);
+        showSqlConsole = false;
+        const layer = mapStudioStore.addLayerFromDataset(dataset);
+        if (dataset.geometry_column) {
+          await loadLayerData(layer);
+        }
+      }}
+    />
   {/if}
 </div>
 
@@ -699,6 +761,22 @@
   .dataset-list button {
     width: 100%;
     text-align: left;
+  }
+
+  .upload-progress {
+    width: 100%;
+    height: 6px;
+    background: #2a2a4a;
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 8px 0 4px;
+  }
+
+  .upload-progress-bar {
+    height: 100%;
+    background: var(--accent, #4fc3f7);
+    border-radius: 3px;
+    transition: width 0.2s ease;
   }
 
   .status {

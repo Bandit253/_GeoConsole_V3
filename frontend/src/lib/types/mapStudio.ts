@@ -40,6 +40,11 @@ export interface LayerStyle {
   breaks?: number[];
   colors?: string[];
   categories?: { value: string | number; color: string; label?: string }[];
+
+  // Clustering (Point layers only)
+  cluster?: boolean;
+  clusterRadius?: number;
+  clusterMaxZoom?: number;
 }
 
 export interface MapLayer {

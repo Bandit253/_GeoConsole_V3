@@ -24,29 +24,70 @@ Docker Container (geoconsole-backend)
 - **Docker Compose**: 2.0+
 - **Cloudflare Tunnel**: Configured and running
 
-## Quick Start
+## Deployment Options
 
-### 1. Install Docker
+### Option A: Pre-built Images from Docker Hub (Recommended)
+
+**On your local machine (Windows/Mac/Linux):**
+
+1. Build and push images:
+
+```powershell
+# Windows PowerShell
+.\deployment\build-and-push.ps1 -DockerUsername "your-dockerhub-username"
+```
 
 ```bash
-# Install Docker
-curl -fsSL https://get.docker.com | sh
+# Linux/Mac
+export DOCKER_USERNAME=your-dockerhub-username
+./deployment/build-and-push.sh
+```
 
-# Add user to docker group (optional, to run without sudo)
+**On VPS:**
+
+1. Install Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-### 2. Clone Repository
+2. Clone repository and configure:
 
 ```bash
 git clone <your-repo> /opt/geoconsole
 cd /opt/geoconsole
+
+# Edit docker-compose.vps.yml and update the image name
+nano docker-compose.vps.yml
+# Change: your-dockerhub-username/geoconsole-v3:latest
 ```
 
-### 3. Deploy
+3. Deploy:
 
 ```bash
+docker compose -f docker-compose.vps.yml pull
+docker compose -f docker-compose.vps.yml up -d backend
+```
+
+### Option B: Build on VPS
+
+**Only use if you have sufficient RAM (4GB+) on VPS**
+
+1. Install Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+2. Clone and deploy:
+
+```bash
+git clone <your-repo> /opt/geoconsole
+cd /opt/geoconsole
 chmod +x deployment/docker-deploy.sh
 ./deployment/docker-deploy.sh
 ```

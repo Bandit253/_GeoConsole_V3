@@ -1,0 +1,34 @@
+version: '3.8'
+
+# VPS deployment using pre-built Docker Hub images
+# Update the image name with your Docker Hub username
+
+services:
+  backend:
+    image: bandit253/geoconsole-v3:latest
+    container_name: geoconsole-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3003:3003"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - RUST_LOG=info,geoconsole_v3=debug
+      - HOST=0.0.0.0
+      - PORT=3003
+      - STATIC_DIR=/app/frontend/dist
+    networks:
+      - oratagroup_oratagroup-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  oratagroup_oratagroup-network:
+    external: true
+
+volumes:
+  data:

@@ -6,7 +6,8 @@
  */
 
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { ScatterplotLayer, PathLayer, PolygonLayer } from '@deck.gl/layers';
+import { ScatterplotLayer, PathLayer, PolygonLayer, TextLayer } from '@deck.gl/layers';
+import Supercluster from 'supercluster';
 import { GeoArrowScatterplotLayer, GeoArrowPathLayer, GeoArrowPolygonLayer } from '@geoarrow/deck.gl-layers';
 import type { Table } from 'apache-arrow';
 import type { Map as MapLibreMap } from 'maplibre-gl';
@@ -112,6 +113,9 @@ export interface DeckLayerStyle {
   colors?: string[];
   breaks?: number[];
   categories?: { value: string | number; color: string }[];
+  cluster?: boolean;
+  clusterRadius?: number;
+  clusterMaxZoom?: number;
 }
 
 function hexToRgba(hex: string, alpha = 255): [number, number, number, number] {
@@ -169,10 +173,12 @@ export interface PickedFeatureInfo {
 
 class DeckGLService {
   private overlay: MapboxOverlay | null = null;
-  private layers: Map<string, any> = new Map();
+  private layers: Map<string, any | any[]> = new Map();
   private layerData: Map<string, LayerData> = new Map();
   private map: MapLibreMap | null = null;
   private _onFeatureClick: ((info: PickedFeatureInfo) => void) | null = null;
+  private clusterIndices: Map<string, Supercluster> = new Map();
+  private clusterSettings: Map<string, { radius: number; maxZoom: number }> = new Map();
 
   /** Register a callback for feature click events */
   set onFeatureClick(cb: ((info: PickedFeatureInfo) => void) | null) {
@@ -238,6 +244,19 @@ class DeckGLService {
       return;
     }
 
+    // Cluster path for Point layers
+    if (style.cluster && geometryType.toLowerCase().includes('point')) {
+      const features = this.parseGeoJsonGeometry(table);
+      const data: LayerData = { arrowTable: table, features, geometryType, style, visible };
+      this.layerData.set(layerId, data);
+      this.ensureClusterIndex(layerId, data, style);
+      const clusterLayers = this.buildClusterLayers(layerId, style, visible);
+      this.layers.set(layerId, clusterLayers);
+      this.updateOverlay();
+      console.log(`Added cluster layer: ${layerId} (${geometryType}, ${features.length} features)`);
+      return;
+    }
+
     // Try GeoArrow path first (zero-copy Arrow → GPU)
     const geoArrowLayer = this.tryCreateGeoArrowLayer(layerId, table, geometryType, style, visible);
     if (geoArrowLayer) {
@@ -290,7 +309,8 @@ class DeckGLService {
 
     const geomField = table.schema.fields.find(f => f.name === 'geometry');
     const extName = geomField?.metadata?.get('ARROW:extension:name') ?? '';
-    const isGeoArrowByMeta = extName.startsWith('geoarrow.');
+    // geoarrow.wkb is still WKB binary — GeoArrow layers require native struct types
+    const isGeoArrowByMeta = extName.startsWith('geoarrow.') && extName !== 'geoarrow.wkb';
 
     // Also check struct children: GeoArrow Point has x/y Float children
     const arrowType = geomCol.type;
@@ -371,6 +391,25 @@ class DeckGLService {
     const mergedStyle: DeckLayerStyle = { ...data.style, ...newStyle };
     this.layerData.set(layerId, { ...data, style: mergedStyle });
 
+    // Cluster path
+    if (mergedStyle.cluster && data.geometryType.toLowerCase().includes('point')) {
+      if (!data.features && data.arrowTable) {
+        data.features = this.parseGeoJsonGeometry(data.arrowTable);
+        this.layerData.set(layerId, { ...data, features: data.features });
+      }
+      this.ensureClusterIndex(layerId, { ...data, style: mergedStyle }, mergedStyle);
+      const clusterLayers = this.buildClusterLayers(layerId, mergedStyle, data.visible);
+      this.layers.set(layerId, clusterLayers);
+      this.updateOverlay();
+      return;
+    }
+
+    // Remove cluster index if clustering was disabled
+    if (this.clusterIndices.has(layerId)) {
+      this.clusterIndices.delete(layerId);
+      this.clusterSettings.delete(layerId);
+    }
+
     let layer: any;
     if (data.arrowTable) {
       // For data-driven styling with GeoArrow, we need the fallback path
@@ -407,6 +446,8 @@ class DeckGLService {
   removeLayer(layerId: string): void {
     this.layers.delete(layerId);
     this.layerData.delete(layerId);
+    this.clusterIndices.delete(layerId);
+    this.clusterSettings.delete(layerId);
     this.updateOverlay();
   }
 
@@ -552,9 +593,111 @@ class DeckGLService {
     return features;
   }
 
+  // ========================================================================
+  // Clustering
+  // ========================================================================
+
+  /** Build or rebuild the supercluster index for a layer, skipping if settings unchanged */
+  private ensureClusterIndex(layerId: string, data: LayerData, style: DeckLayerStyle): void {
+    const radius = style.clusterRadius ?? 60;
+    const maxZoom = style.clusterMaxZoom ?? 16;
+    const existing = this.clusterSettings.get(layerId);
+    if (this.clusterIndices.has(layerId) && existing?.radius === radius && existing?.maxZoom === maxZoom) return;
+
+    const features = data.features ?? [];
+    if (features.length === 0) return;
+
+    const points = features
+      .filter(f => Array.isArray(f.coordinates) && !Array.isArray(f.coordinates[0]))
+      .map(f => ({
+        type: 'Feature' as const,
+        geometry: { type: 'Point' as const, coordinates: f.coordinates as [number, number] },
+        properties: (f.properties ?? {}) as Record<string, any>
+      }));
+
+    const index = new Supercluster({ radius, maxZoom });
+    index.load(points);
+    this.clusterIndices.set(layerId, index);
+    this.clusterSettings.set(layerId, { radius, maxZoom });
+  }
+
+  /** Build ScatterplotLayer + TextLayer for the current map viewport/zoom */
+  private buildClusterLayers(layerId: string, style: DeckLayerStyle, visible: boolean): any[] {
+    const index = this.clusterIndices.get(layerId);
+    if (!index || !this.map) return [];
+
+    const zoom = Math.floor(this.map.getZoom());
+    const b = this.map.getBounds();
+    const clusters = index.getClusters([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], zoom);
+
+    const opacity = style.opacity ?? 0.8;
+    const alpha = Math.round(opacity * 255);
+    const baseRadius = style.radius ?? 5;
+    const fillColor = style.fillColor ?? hexToRgba('#3388ff', alpha);
+    const strokeColor = style.strokeColor ?? hexToRgba('#2171b5', 255);
+
+    const circleLayer = new ScatterplotLayer({
+      id: `${layerId}__cluster_circles`,
+      data: clusters,
+      getPosition: (d: any) => d.geometry.coordinates,
+      getRadius: (d: any) => d.properties.cluster
+        ? Math.min(40, Math.max(baseRadius * 2, Math.log10(d.properties.point_count + 1) * 10))
+        : baseRadius,
+      radiusUnits: 'pixels' as const,
+      getFillColor: (d: any) => {
+        if (!d.properties.cluster) return fillColor as [number, number, number, number];
+        const count = d.properties.point_count;
+        if (count < 10)  return [255, 237, 160, alpha] as [number, number, number, number];
+        if (count < 100) return [254, 178,  76, alpha] as [number, number, number, number];
+        return [240, 59, 32, alpha] as [number, number, number, number];
+      },
+      getLineColor: strokeColor as [number, number, number, number],
+      lineWidthMinPixels: 1,
+      pickable: true,
+      visible,
+      updateTriggers: { getRadius: [zoom, baseRadius], getFillColor: [zoom, alpha], getPosition: zoom }
+    });
+
+    const labelLayer = new TextLayer({
+      id: `${layerId}__cluster_labels`,
+      data: clusters.filter((d: any) => d.properties.cluster),
+      getPosition: (d: any) => d.geometry.coordinates,
+      getText: (d: any) => String(d.properties.point_count_abbreviated ?? d.properties.point_count),
+      getSize: 12,
+      getColor: [255, 255, 255, 255] as [number, number, number, number],
+      getTextAnchor: 'middle' as any,
+      getAlignmentBaseline: 'center' as any,
+      pickable: false,
+      visible,
+      updateTriggers: { data: zoom, getPosition: zoom, getText: zoom }
+    });
+
+    return [circleLayer, labelLayer];
+  }
+
+  /**
+   * Re-render all clustered layers at the given zoom level.
+   * Call from MapLibre's zoomend event.
+   */
+  updateClusterZoom(zoom: number): void {
+    if (this.clusterIndices.size === 0) return;
+    for (const [layerId] of this.clusterIndices) {
+      const data = this.layerData.get(layerId);
+      if (!data) continue;
+      const clusterLayers = this.buildClusterLayers(layerId, data.style, data.visible);
+      this.layers.set(layerId, clusterLayers);
+    }
+    this.updateOverlay();
+  }
+
   private updateOverlay(): void {
     if (!this.overlay) return;
-    this.overlay.setProps({ layers: Array.from(this.layers.values()) });
+    const allLayers: any[] = [];
+    for (const entry of this.layers.values()) {
+      if (Array.isArray(entry)) allLayers.push(...entry);
+      else allLayers.push(entry);
+    }
+    this.overlay.setProps({ layers: allLayers });
   }
 
   dispose(): void {
@@ -562,6 +705,8 @@ class DeckGLService {
     this.overlay = null;
     this.layers.clear();
     this.layerData.clear();
+    this.clusterIndices.clear();
+    this.clusterSettings.clear();
     this.map = null;
   }
 }

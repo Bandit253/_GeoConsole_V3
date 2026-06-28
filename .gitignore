@@ -32,3 +32,11 @@ Thumbs.db
 
 # Logs
 *.log
+deployment/*
+data/*
+TASKS.md
+docker-compose.vps.yml
+target/*
+.cargo/*
+.devin/*
+anthropic_assessment.md

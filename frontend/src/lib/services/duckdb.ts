@@ -135,7 +135,12 @@ class DuckDBService {
     
     // Check TTL
     if (Date.now() - entry.cachedAt > entry.ttlMs) {
-      this.removeDataset(datasetId);
+      // Only remove from in-memory cache map synchronously.
+      // Do NOT fire-and-forget removeDataset() here — its async DROP TABLE
+      // races with concurrent loads causing "table does not exist" errors.
+      // Actual table DROP + IndexedDB cleanup happens in loadFromArrowIPC
+      // (which does DROP TABLE IF EXISTS before INSERT) or cleanExpired().
+      this.cache.delete(datasetId);
       return false;
     }
     
@@ -163,14 +168,24 @@ class DuckDBService {
 
     const tableName = `dataset_${datasetId.replace(/-/g, '_')}`;
 
-    // Drop existing table if present
-    await this.conn.query(`DROP TABLE IF EXISTS ${tableName}`);
-
     // Parse Arrow IPC buffer using apache-arrow
     const arrowTable = tableFromIPC(arrowBuffer);
-    
-    // Insert Arrow table into DuckDB using insertArrowTable
-    await this.conn.insertArrowTable(arrowTable, { name: tableName, create: true });
+
+    // Drop existing table if present, then insert.
+    // Wrap in retry to handle rare race conditions where another async path
+    // recreates the table between DROP and INSERT.
+    await this.conn.query(`DROP TABLE IF EXISTS ${tableName}`);
+    try {
+      await this.conn.insertArrowTable(arrowTable, { name: tableName, create: true });
+    } catch (e: any) {
+      if (e?.message?.includes('already exists')) {
+        console.warn(`Table ${tableName} created concurrently, retrying...`);
+        await this.conn.query(`DROP TABLE IF EXISTS ${tableName}`);
+        await this.conn.insertArrowTable(arrowTable, { name: tableName, create: true });
+      } else {
+        throw e;
+      }
+    }
 
     // Get feature count
     const countResult = await this.conn.query(`SELECT COUNT(*) as cnt FROM ${tableName}`);
@@ -436,6 +451,8 @@ class DuckDBService {
       }
 
       try {
+        // Drop first in case the table exists (e.g. partial OPFS state)
+        await this.conn.query(`DROP TABLE IF EXISTS ${entry.tableName}`);
         const arrowTable = tableFromIPC(buffer);
         await this.conn.insertArrowTable(arrowTable, { name: entry.tableName, create: true });
         rehydrated++;

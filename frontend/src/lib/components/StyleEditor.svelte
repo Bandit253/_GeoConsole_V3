@@ -248,6 +248,36 @@
           oninput={(e) => handleNumberChange('radius', parseFloat((e.target as HTMLInputElement).value))}
         />
       </div>
+
+      <!-- Clustering -->
+      <div class="style-section">
+        <label>Point Clustering</label>
+        <label class="toggle-label">
+          <input
+            type="checkbox"
+            checked={layer.style.cluster ?? false}
+            onchange={(e) => onStyleChange({ cluster: (e.target as HTMLInputElement).checked })}
+          />
+          <span>Cluster nearby points</span>
+        </label>
+      </div>
+
+      {#if layer.style.cluster}
+        <div class="style-section">
+          <label>
+            Cluster Radius
+            <span class="value">{layer.style.clusterRadius ?? 60}px</span>
+          </label>
+          <input
+            type="range"
+            min="10"
+            max="200"
+            step="5"
+            value={layer.style.clusterRadius ?? 60}
+            oninput={(e) => onStyleChange({ clusterRadius: parseFloat((e.target as HTMLInputElement).value) })}
+          />
+        </div>
+      {/if}
     {/if}
 
     <!-- Fill Opacity -->
@@ -428,6 +458,22 @@
     background: var(--accent);
     border-color: var(--accent);
     color: white;
+  }
+
+  .toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .toggle-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--accent);
   }
 
   .field-select {
